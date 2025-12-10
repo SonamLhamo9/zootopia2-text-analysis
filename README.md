@@ -53,12 +53,12 @@ I used LDA (Latent Dirichlet Allocation) to find common themes.
 lda_model = models.LdaModel(corpus=corpus, id2word=dictionary, num_topics=5)
 ```
 
-Main Topics (Simple Summary)  
+Main Topics  
 
  Topic 0: General comments about the movie  
  Topic 1: Story and production quality  
  Topic 4: Personal emotional reactions  
- Topics 2 & 3: Small, less meaningful topics (due to simple text cleaning)  
+ Topics 2 & 3: Small, less meaningful topics    
 
 This shows that most reviews focus on animation, story, and character chemistry.  
 
@@ -93,4 +93,4 @@ The sentiment analysis, topic modeling, and character-level study all help us un
  What themes they discussed  
  Which characters created the strongest emotional reactions  
 
-Overall, the movie was well received, especially for its animation, humor, emotional tone, and main characters.# zootopia2-text-analysis  
+Overall, the movie was well received, especially for its animation, humor, emotional tone, and main characters.    
