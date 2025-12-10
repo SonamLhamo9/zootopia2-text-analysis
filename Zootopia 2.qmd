@@ -1,0 +1,324 @@
+---
+title: "Project Zootopia 2"
+author: "Sonam Lhamo Silanglamu"
+format:
+  html:
+    toc: true
+    toc-location: left
+    self-contained: true
+jupyter: python3
+---
+# 1. Load Packages  
+```{python, message=FALSE, warning=FALSE}
+import requests
+import json
+import pandas as pd
+import time
+import html
+import re
+```
+
+# 2. Scrape IMDb Reviews 
+### Define cleaning function
+```{python, message=FALSE, warning=FALSE}
+def clean_html(text):
+    if text is None:
+        return ""
+    text = html.unescape(text)
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"<.*?>", "", text)
+    return text.strip()
+```
+
+
+### Set IMDb headers
+```{python, message=FALSE, warning=FALSE}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+    "Referer": "https://www.imdb.com/",
+    "x-amzn-sessionid": "143-9737287-3427551",
+    "x-imdb-user-country": "US",
+    "x-imdb-user-language": "en-US",
+    "x-imdb-client-name": "imdb-web-next-localized"
+}
+```
+
+
+### Fetch page function
+```{python, message=FALSE, warning=FALSE}
+def fetch_page(title_id, after=None):
+    url = "https://caching.graphql.imdb.com/"
+
+    payload = {
+        "operationName": "TitleReviewsRefine",
+        "variables": {
+            "after": after,
+            "const": title_id,
+            "filter": {},
+            "first": 25,
+            "locale": "en-US",
+            "sort": {
+                "by": "HELPFULNESS_SCORE",
+                "order": "DESC"
+            }
+        },
+        "extensions": {
+            "persistedQuery": {
+                "sha256Hash": "d389bc70c27f09c00b663705f0112254e8a7c75cde1cfd30e63a2d98c1080c87",
+                "version": 1
+            }
+        }
+    }
+
+    r = requests.post(url, json=payload, headers=HEADERS)
+
+    try:
+        return r.json()
+    except:
+        print("Error:", r.text[:300])
+        return {}
+```
+
+
+### Fetch all reviews
+```{python, message=FALSE, warning=FALSE}
+def fetch_all_reviews(title_id):
+    all_reviews = []
+    after = None
+
+    while True:
+        data = fetch_page(title_id, after)
+
+        if "data" not in data:
+            print("No data field. Full response:", data)
+            break
+
+        reviews = data["data"]["title"]["reviews"]
+        edges = reviews["edges"]
+
+        for e in edges:
+            n = e["node"]
+            html_text = n["text"]["originalText"].get("plaidHtml")
+            plain_text = clean_html(html_text)
+
+            all_reviews.append({
+                "review_id": n["id"],
+                "username": n["author"]["username"]["text"],
+                "rating": n.get("authorRating"),
+                "date": n.get("submissionDate"),
+                "summary": n["summary"]["originalText"],
+                "text": plain_text,
+                "helpful_up": n["helpfulness"]["upVotes"],
+                "helpful_down": n["helpfulness"]["downVotes"],
+            })
+
+        if not reviews["pageInfo"]["hasNextPage"]:
+            break
+
+        after = reviews["pageInfo"]["endCursor"]
+        time.sleep(0.2)
+
+    return pd.DataFrame(all_reviews)
+```
+
+### Load dataset
+```{python, message=FALSE, warning=FALSE}
+df = fetch_all_reviews("tt26443597")
+df.head()
+```
+
+### Summary of dataset
+```{python, message=FALSE, warning=FALSE}
+df.info()
+```
+
+# 3. Sentiment Analysis  
+### Load tools
+```{python, message=FALSE, warning=FALSE}
+from textblob import TextBlob
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import nltk
+nltk.download('vader_lexicon')
+```
+
+
+### Sentiment scoring function
+```{python, message=FALSE, warning=FALSE}
+vader = SentimentIntensityAnalyzer()
+
+def compute_sentiments(text):
+    if not isinstance(text, str):
+        return 0, 0
+    
+    # TextBlob
+    blob_score = TextBlob(text).sentiment.polarity
+    
+    # VADER
+    vader_score = vader.polarity_scores(text)['compound']
+    
+    return blob_score, vader_score
+
+df[['blob_sent', 'vader_sent']] = df['text'].apply(
+    lambda x: pd.Series(compute_sentiments(x))
+)
+```
+
+
+### Sentiment summary statistics
+```{python, message=FALSE, warning=FALSE}
+df[['blob_sent', 'vader_sent']].describe()
+```
+
+
+### Plot sentiment distribution
+```{python, fig-width=6, fig-height=4, message=FALSE, warning=FALSE}
+import matplotlib.pyplot as plt
+
+plt.hist(df['vader_sent'], bins=20)
+plt.title("Distribution of VADER Sentiment Scores")
+plt.xlabel("Sentiment Score")
+plt.ylabel("Count")
+plt.show()
+```
+
+
+### Sentiment vs rating
+```{python, fig-width=6, fig-height=4, message=FALSE, warning=FALSE}
+plt.scatter(df['rating'], df['vader_sent'])
+plt.xlabel("User Rating")
+plt.ylabel("VADER Sentiment")
+plt.title("Rating vs Sentiment")
+plt.show()
+```
+
+
+### Correlation matrix
+```{python, message=FALSE, warning=FALSE}
+df[['rating', 'vader_sent', 'blob_sent']].corr()
+```
+
+# 4. Topic Modeling  
+### Clean text
+```{python, message=FALSE, warning=FALSE}
+import nltk
+from nltk.corpus import stopwords
+from sklearn.feature_extraction.text import CountVectorizer
+from gensim import corpora, models
+
+nltk.download('stopwords')
+
+stop_words = stopwords.words('english')
+
+texts = df['text'].astype(str).tolist()
+
+def clean_text(t):
+    t = t.lower()
+    t = re.sub(r'[^a-zA-Z\s]', '', t)
+    return t
+
+texts_clean = [clean_text(t) for t in texts]
+```
+
+### Build LDA model
+```{python, message=FALSE, warning=FALSE}
+vectorizer = CountVectorizer(stop_words='english')
+X = vectorizer.fit_transform(texts_clean)
+
+words = [t.split() for t in texts_clean]
+dictionary = corpora.Dictionary(words)
+corpus = [dictionary.doc2bow(w) for w in words]
+```
+
+```{python, message=FALSE, warning=FALSE}
+lda_model = models.LdaModel(
+    corpus=corpus,
+    id2word=dictionary,
+    num_topics=5,
+    passes=10,
+    random_state=42
+)
+
+topics = lda_model.print_topics(num_words=10)
+topics
+```
+
+
+```{python, message=FALSE, warning=FALSE}
+for i, topic in topics:
+    print(f"Topic {i}: {topic}")
+```
+
+
+```{python, message=FALSE, warning=FALSE}
+df['topic'] = [max(lda_model[corpus[i]], key=lambda x: x[1])[0] 
+               for i in range(len(corpus))]
+
+df[['summary', 'topic']].head(10)
+```
+
+
+### Topic distribution plot
+```{python, fig-width=6, fig-height=4, message=FALSE, warning=FALSE}
+topic_counts = df['topic'].value_counts().sort_index()
+
+plt.bar([f"Topic {i}" for i in topic_counts.index], topic_counts.values)
+plt.title("Topic Distribution")
+plt.xlabel("Topics")
+plt.ylabel("Number of Reviews")
+plt.show()
+```
+
+# 5. Character-Level Sentiment  
+```{python, message=FALSE, warning=FALSE}
+characters = {
+    "judy": ["judy", "hopps", "judy hopps"],
+    "nick": ["nick", "wilde", "nick wilde"],
+    "snake": ["snake", "gary", "gary de'snake", "desnake"],
+    "bogo": ["bogo", "chief bogo"],
+    "gazelle": ["gazelle", "shakira"]
+}
+```
+
+
+```{python, message=FALSE, warning=FALSE}
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import nltk
+nltk.download('punkt')
+
+analyzer = SentimentIntensityAnalyzer()
+```
+
+### Extract character-level sentiment
+```{python, message=FALSE, warning=FALSE}
+import nltk
+from nltk.tokenize import sent_tokenize
+
+results = []
+
+for idx, row in df.iterrows():
+    text = row['text']
+    sentences = sent_tokenize(text)
+    
+    for sent in sentences:
+        sent_lower = sent.lower()
+        sent_score = analyzer.polarity_scores(sent)["compound"]
+        
+        for char, keywords in characters.items():
+            if any(k in sent_lower for k in keywords):
+                results.append([char, sent, sent_score])
+```
+
+### Summary table
+```{python, message=FALSE, warning=FALSE}
+char_df = pd.DataFrame(results, columns=["character", "sentence", "sentiment"])
+
+char_summary = char_df.groupby("character")["sentiment"].mean().reset_index()
+
+char_summary
+```
+
+# 6. Export Results  
+```{python, message=FALSE, warning=FALSE}
+df.to_csv("zootopia2_reviews_final.csv", index=False)
+```
